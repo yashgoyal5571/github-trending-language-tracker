@@ -1,0 +1,378 @@
+{
+  "name": "GitHub Trending Language Tracker",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "=https://api.github.com/search/repositories?q=created:{{ $now.minus({ days: 30 }).toFormat('yyyy-MM-dd') }}..{{ $now.toFormat('yyyy-MM-dd') }}+stars:>50&per_page=100&sort=stars",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5
+            }
+          },
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "name": "page",
+                    "value": "={{ $pageCount+1 }}"
+                  }
+                ]
+              },
+              "limitPagesFetched": true,
+              "maxRequests": 5,
+              "requestInterval": 1000
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -672,
+        -656
+      ],
+      "id": "221df184-109d-4e07-b02e-517faa06da84",
+      "name": "Fetch Window A Repos",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "9ebbG8gNTUwTM6W5",
+          "name": "Github Bearer Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://api.github.com/search/repositories?q=created:{{ $now.minus({ days: 60 }).toFormat('yyyy-MM-dd') }}..{{ $now.minus({ days: 30 }).toFormat('yyyy-MM-dd') }}+stars:>50&per_page=100&sort=stars",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5
+            }
+          },
+          "pagination": {
+            "pagination": {
+              "parameters": {
+                "parameters": [
+                  {
+                    "name": "page",
+                    "value": "={{ $pageCount+1}}"
+                  }
+                ]
+              },
+              "limitPagesFetched": true,
+              "maxRequests": 5,
+              "requestInterval": 1000
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -656,
+        -480
+      ],
+      "id": "e7aee435-4a83-416a-b752-4578fd9ac21e",
+      "name": "Fetch Window B Repos",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "9ebbG8gNTUwTM6W5",
+          "name": "Github Bearer Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$input.all().map(i=> i.json);\nconst repos=r.flatMap(i=> i.items);\n\nconst language=repos.reduce((acc,cur)=> {\n  const lang=cur.language;\n  if(!lang)\n    return acc;\n  acc[cur.language]=(acc[cur.language]||0)+1;\n\n  return acc;\n},{});\n\nreturn language;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -464,
+        -656
+      ],
+      "id": "4bdd01e1-701e-419e-8459-028fe9056c91",
+      "name": "Aggregate Window A Languages"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r=$input.all().map(i=> i.json);\nconst repos=r.flatMap(i=> i.items);\n  \nconst language=repos.reduce((acc,cur)=> {\n  const lang=cur.language;\n  if(!lang)\n    return acc;\n  acc[cur.language]=(acc[cur.language]||0)+1;\n\n  return acc;\n},{});\n\nreturn language;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -464,
+        -480
+      ],
+      "id": "fb648609-2610-4485-93bb-a4ed83b3fa31",
+      "name": "Aggregate Window B Languages"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -208,
+        -576
+      ],
+      "id": "dd505a7a-4bf1-43c5-aa67-c0199842ffd8",
+      "name": "Merge Language Counts"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input=$input.all().map(i => i.json);\nconst windowA=input[0];\nconst windowB=input[1];\n\n// Total repo counts for normalization\nconst totalA=Object.values(windowA).reduce((s,v) => s+v, 0);\nconst totalB=Object.values(windowB).reduce((s,v) => s+v, 0);\n\nif (totalA===0)\n  throw new Error('Window A returned 0 repos — check fetch node or API filters');\nif (totalB===0) \n  throw new Error('Window B returned 0 repos — check fetch node or API filters');\n\nconst allLanguages=[...new Set([...Object.keys(windowA), ...Object.keys(windowB)])];\n\nconst results=[];\n\nfor (const lang of allLanguages) {\n  const countA=windowA[lang] || 0;\n  const countB=windowB[lang] || 0;\n\n  // Minimum presence filter — ignore micro languages\n  // Must appear at least 3 times across both windows\n  if (countA + countB < 3) continue;\n\n  // Share = this language's % of all repos in that window\n  const shareA=countA/totalA;\n  const shareB=countB/totalB;\n\n  let category;\n  let percentChange=null;\n\n  if(countA===0) \n    // Present in older window, absent in recent → dropped off \n    category='Dead';\n   else if(countB===0) \n    // Absent in older window, present in recent → newly emerging\n    category='New';\n   else {\n    // Both windows have data — compare market share\n    percentChange=Math.round(((shareA-shareB)/shareB) * 100);\n\n    if(percentChange>20) \n      category='Rising';\n    else if(percentChange<-20) \n      category='Declining';\n    else \n      category='Stable';\n  }\n\n  results.push({\n    json: {\n      language: lang,\n      countA,\n      countB,\n      shareA: parseFloat((shareA*100).toFixed(2)),\n      shareB: parseFloat((shareB*100).toFixed(2)),\n      percentChange,\n      repoChange: `${countB} → ${countA}`,\n      category\n    }\n  });\n}\n\n// Sort: Rising first, then New, Declining, Dead, Stable — by percentChange within each\nconst order={ Rising:0, New:1, Declining:2, Dead:3, Stable:4};\nresults.sort((a,b) => {\n  const catDiff=order[a.json.category] - order[b.json.category];\n  if (catDiff!==0) return catDiff;\n  return (b.json.percentChange || 0) - (a.json.percentChange || 0);\n});\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        -576
+      ],
+      "id": "a9f6519b-7483-4658-bd7b-f4ddbc3f9201",
+      "name": "Compare & Classify Languages"
+    },
+    {
+      "parameters": {
+        "authentication": "webhook",
+        "content": "={{ $json.Message }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [
+        432,
+        -576
+      ],
+      "id": "d6f30a4a-4a42-407b-a895-1aba1ceca71e",
+      "name": "Discord",
+      "webhookId": "2c90e80d-af0b-4eae-8ba3-2a7b416f7d10",
+      "credentials": {
+        "discordWebhookApi": {
+          "id": "jSirjGMUNLOvIuJP",
+          "name": "Discord Webhook account 2"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        -736
+      ],
+      "id": "e5b0e6d6-ae78-4f1e-adcb-e2365df8ee62",
+      "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1104,
+        -560
+      ],
+      "id": "f015a5c4-0397-4fb4-bd4e-4d9c69226504",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all().map(i => i.json);\n\nconst rising = items.filter(i => i.category === 'Rising');\nconst declining = items.filter(i => i.category === 'Declining');\nconst newLangs = items.filter(i => i.category === 'New');\nconst dead = items.filter(i => i.category === 'Dead');\nconst stable = items.filter(i => i.category === 'Stable');\n\nconst fmt = (lang) => {\n  if (lang.percentChange!==null) {\n    const dir=lang.percentChange > 0 ? '+' : '';\n    return `${lang.language}: ${dir}${lang.percentChange}% share change (${lang.shareB}% → ${lang.shareA}%) | ${lang.repoChange} repos`;\n  }\n  return `${lang.language}: ${lang.shareA > 0 ? lang.shareA + '% share' : 'no recent repos'} | ${lang.repoChange} repos`;\n};\n\nlet message = `📊 **GitHub Language Trends — ${$now.toFormat('yyyy-MM-dd')}**\\n\\n`;\n\nif (rising.length) message += `📈 **Rising**\\n${rising.map(fmt).join('\\n')}\\n\\n`;\nif (newLangs.length) message += `🆕 **New**\\n${newLangs.map(fmt).join('\\n')}\\n\\n`;\nif (declining.length) message += `📉 **Declining**\\n${declining.map(fmt).join('\\n')}\\n\\n`;\nif (dead.length) message += `💀 **Dead**\\n${dead.map(fmt).join('\\n')}\\n\\n`;\nif (stable.length) message += `➡️ **Stable**\\n${stable.map(fmt).join('\\n')}`;\nif (message.length > 1900) {\n  message = message.substring(0, 1900) + '\\n... (truncated)';\n}\nreturn [{ json: { Message: message } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        -576
+      ],
+      "id": "db955ed8-515f-4ee0-8a76-4d71277dde35",
+      "name": "Build Discord Summary"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -880,
+        -480
+      ],
+      "id": "30ea133a-9416-468e-b47c-fb75ea16c56a",
+      "name": "Wait",
+      "webhookId": "e587cc1a-233c-40a7-82e4-91bcb8bdf8d9"
+    },
+    {
+      "parameters": {
+        "jsCode": "const info = $input.first().json;\n\nconst errorMessage = info.error?.message || 'Unknown error';\nconst nodeName = info.error?.node?.name || 'Unknown node';\nconst workflowName = info.workflow?.name || 'Unknown workflow';\nconst executionUrl = info.execution?.url || 'No URL';\n\nreturn [{\n  json: {\n    Message: `🚨 **Workflow Error: ${workflowName}**\\n\\n**Error:** ${errorMessage}\\n**Node:** ${nodeName}\\n**Time:** ${$now.toFormat('yyyy-MM-dd HH:mm:ss')}\\n**Execution:** ${executionUrl}`\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        -736
+      ],
+      "id": "059ebfe1-85d8-4e0d-89f7-505780292a9f",
+      "name": "Formatting Error Message"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Fetch Window A Repos": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Window A Languages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Window B Repos": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Window B Languages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Window A Languages": {
+      "main": [
+        [
+          {
+            "node": "Merge Language Counts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Window B Languages": {
+      "main": [
+        [
+          {
+            "node": "Merge Language Counts",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Language Counts": {
+      "main": [
+        [
+          {
+            "node": "Compare & Classify Languages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare & Classify Languages": {
+      "main": [
+        [
+          {
+            "node": "Build Discord Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Formatting Error Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Window A Repos",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Discord Summary": {
+      "main": [
+        [
+          {
+            "node": "Discord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Fetch Window B Repos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formatting Error Message": {
+      "main": [
+        [
+          {
+            "node": "Discord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "0501eba2-a593-44eb-89e4-a5598cd05603",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "bc3b518e3438fa93658b32c4726b4a6a9ef264ef621f5500657c694eaf632d8a"
+  },
+  "nodeGroups": [],
+  "id": "apabjoqitOcB9oLE",
+  "tags": []
+}
